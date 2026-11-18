@@ -22,7 +22,10 @@ jobs:
 
       - name: Get current version
         id: version
-        run: grep '^TAILSCALE_VERSION=' version.env >> "$GITHUB_OUTPUT"
+        run: |
+          version=$(sed -n 's/^TAILSCALE_VERSION=//p' version.env)
+          echo "TAILSCALE_VERSION=$version" >> "$GITHUB_OUTPUT"
+          echo "SHORT_VERSION=${version%%-*}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout tailscale/tailscale-android
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -69,7 +72,7 @@ jobs:
         env:
           KEYSTORE: ${{ secrets.KEYSTORE }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          VERSION: ${{ steps.version.outputs.TAILSCALE_VERSION }}
+          VERSION: ${{ steps.version.outputs.SHORT_VERSION }}
         run: |
           trap 'rm -f release.jks' EXIT
           printf '%s' "$KEYSTORE" | base64 -d > release.jks
@@ -95,9 +98,9 @@ jobs:
       - name: Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          name: Tailscale Android ${{ steps.version.outputs.TAILSCALE_VERSION }}
+          name: Tailscale Android ${{ steps.version.outputs.SHORT_VERSION }}
           tag_name: ${{ steps.version.outputs.TAILSCALE_VERSION }}
           body: |
             https://github.com/tailscale/tailscale-android/releases/tag/${{ steps.version.outputs.TAILSCALE_VERSION }}
-          files: tailscale-${{ steps.version.outputs.TAILSCALE_VERSION }}.apk
+          files: tailscale-${{ steps.version.outputs.SHORT_VERSION }}.apk
           make_latest: "true"

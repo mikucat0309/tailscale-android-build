@@ -1,0 +1,103 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - version.env
+      - patches/**
+      - .github/workflows/build.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Get current version
+        id: version
+        run: grep '^TAILSCALE_VERSION=' version.env >> "$GITHUB_OUTPUT"
+
+      - name: Checkout tailscale/tailscale-android
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tailscale/tailscale-android
+          ref: ${{ steps.version.outputs.TAILSCALE_VERSION }}
+          path: upstream
+
+      - name: Setup Java
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        run: |
+          version=$(ls -1 "$ANDROID_HOME/build-tools/" | sort -V | tail -n 1)
+          echo "$ANDROID_HOME/build-tools/$version" >> "$GITHUB_PATH"
+
+          # Use the NDK pinned by upstream; gomobile and the Makefile otherwise pick the runner default.
+          ndk=$(sed -n 's/.*ndkVersion = "\(.*\)".*/\1/p' upstream/android/build.gradle.kts)
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ndk"
+          echo "NDK_ROOT=$ANDROID_HOME/ndk/$ndk" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$ndk" >> "$GITHUB_ENV"
+
+      - name: Setup Git
+        run: |
+          git config --global user.name "Mikucat"
+          git config --global user.email "git@mikucat.me"
+
+      - name: Patch
+        working-directory: upstream
+        run: git am ../patches/*.patch
+
+      - name: Build libtailscale
+        working-directory: upstream
+        run: make libtailscale
+
+      - name: Build APK
+        working-directory: upstream/android
+        run: ./gradlew assembleRelease
+
+      - name: Sign APK
+        env:
+          KEYSTORE: ${{ secrets.KEYSTORE }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          VERSION: ${{ steps.version.outputs.TAILSCALE_VERSION }}
+        run: |
+          trap 'rm -f release.jks' EXIT
+          printf '%s' "$KEYSTORE" | base64 -d > release.jks
+          apk=upstream/android/build/outputs/apk/release/android-release-unsigned.apk
+          apksigner sign \
+            --ks release.jks \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --ks-key-alias key0 \
+            --v1-signing-enabled false \
+            --v2-signing-enabled false \
+            --v3-signing-enabled true \
+            --v4-signing-enabled false \
+            --out "tailscale-$VERSION.apk" \
+            "$apk"
+
+      - name: Update tag
+        env:
+          TAG: ${{ steps.version.outputs.TAILSCALE_VERSION }}
+        run: |
+          git tag -f "$TAG" "$GITHUB_SHA"
+          git push -f origin "refs/tags/$TAG"
+
+      - name: Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          name: Tailscale Android ${{ steps.version.outputs.TAILSCALE_VERSION }}
+          tag_name: ${{ steps.version.outputs.TAILSCALE_VERSION }}
+          body: |
+            https://github.com/tailscale/tailscale-android/releases/tag/${{ steps.version.outputs.TAILSCALE_VERSION }}
+          files: tailscale-${{ steps.version.outputs.TAILSCALE_VERSION }}.apk
+          make_latest: "true"
